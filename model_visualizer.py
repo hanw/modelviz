@@ -103,42 +103,94 @@ class ModelVisualizer:
                     except Exception as e3:
                         print(f"⚠ AutoModel with device_map failed: {e3}")
                         
-                        # Try loading the model class directly for custom architectures
-                        try:
-                            from transformers import AutoConfig
-                            config = AutoConfig.from_pretrained(
-                                self.model_id, 
-                                trust_remote_code=self.trust_remote_code
+                # Try loading the model class directly for custom architectures
+                try:
+                    from transformers import AutoConfig
+                    config = AutoConfig.from_pretrained(
+                        self.model_id,
+                        trust_remote_code=self.trust_remote_code
+                    )
+
+                    # Check if config has auto_map attribute
+                    if hasattr(config, 'auto_map') and config.auto_map is not None:
+                        # Get the model class from the config
+                        model_class = config.auto_map.get("AutoModelForCausalLM", None)
+                        if model_class is None:
+                            model_class = config.auto_map.get("AutoModel", None)
+
+                        if model_class is not None:
+                            # Import the model class dynamically
+                            import importlib
+                            module_path, class_name = model_class.split(".")
+                            module = importlib.import_module(f"transformers_modules.{self.model_id.replace('/', '.')}.{module_path}")
+                            model_class_obj = getattr(module, class_name)
+
+                            model = model_class_obj.from_pretrained(
+                                self.model_id,
+                                trust_remote_code=self.trust_remote_code,
+                                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
                             )
+                            print(f"✓ Model loaded using custom class: {class_name}")
+                        else:
+                            raise RuntimeError("No suitable model class found in auto_map")
+                    else:
+                        # Handle models without auto_map (like GptOssConfig)
+                        print("Config does not have auto_map, trying direct model class loading...")
+                        
+                        # Try to determine the model class from the config type
+                        config_class_name = config.__class__.__name__
+                        print(f"Config class: {config_class_name}")
+                        
+                        # Map config classes to their corresponding model classes
+                        config_to_model_map = {
+                            'GptOssConfig': 'GptOssForCausalLM',
+                            'GptConfig': 'GptForCausalLM',
+                            'GPT2Config': 'GPT2LMHeadModel',
+                            'BertConfig': 'BertForCausalLM',
+                        }
+                        
+                        model_class_name = config_to_model_map.get(config_class_name)
+                        if model_class_name:
+                            print(f"Attempting to load {model_class_name} for {config_class_name}")
                             
-                            # Get the model class from the config
-                            model_class = config.auto_map.get("AutoModelForCausalLM", None)
-                            if model_class is None:
-                                model_class = config.auto_map.get("AutoModel", None)
-                            
-                            if model_class is not None:
-                                # Import the model class dynamically
-                                import importlib
-                                module_path, class_name = model_class.split(".")
-                                module = importlib.import_module(f"transformers_modules.{self.model_id.replace('/', '.')}.{module_path}")
-                                model_class_obj = getattr(module, class_name)
+                            # Try to import the model class from transformers
+                            try:
+                                from transformers import AutoModelForCausalLM
                                 
-                                model = model_class_obj.from_pretrained(
-                                    self.model_id,
-                                    trust_remote_code=self.trust_remote_code,
-                                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
-                                )
-                                print(f"✓ Model loaded using custom class: {class_name}")
-                            else:
-                                raise RuntimeError("No suitable model class found in auto_map")
-                                
-                        except Exception as e4:
-                            print(f"❌ All model loading methods failed:")
-                            print(f"  AutoModelForCausalLM: {e1}")
-                            print(f"  AutoModel: {e2}")
-                            print(f"  AutoModel with device_map: {e3}")
-                            print(f"  Custom model class: {e4}")
-                            raise e4
+                                # First try loading with the model ID and config
+                                try:
+                                    model = AutoModelForCausalLM.from_pretrained(
+                                        self.model_id,
+                                        config=config,
+                                        trust_remote_code=self.trust_remote_code,
+                                        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
+                                    )
+                                    print(f"✓ Model loaded using AutoModelForCausalLM with config: {model_class_name}")
+                                except Exception as pretrained_error:
+                                    print(f"from_pretrained failed: {pretrained_error}")
+                                    print("Trying from_config as fallback...")
+                                    
+                                    # Fallback to creating from config only
+                                    model = AutoModelForCausalLM.from_config(
+                                        config,
+                                        trust_remote_code=self.trust_remote_code,
+                                        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
+                                    )
+                                    print(f"✓ Model loaded using config-based loading: {model_class_name}")
+                                    
+                            except Exception as config_error:
+                                print(f"Config-based loading failed: {config_error}")
+                                raise config_error
+                        else:
+                            raise RuntimeError(f"No model class mapping found for config type: {config_class_name}")
+
+                except Exception as e4:
+                    print(f"❌ All model loading methods failed:")
+                    print(f"  AutoModelForCausalLM: {e1}")
+                    print(f"  AutoModel: {e2}")
+                    print(f"  AutoModel with device_map: {e3}")
+                    print(f"  Custom model class: {e4}")
+                    raise e4
             
             if model is None:
                 raise RuntimeError("Failed to load model with any method")
@@ -465,6 +517,11 @@ class ModelVisualizer:
                 
                 # Process each layer's attention weights
                 for layer_idx, attn in enumerate(outputs.attentions):
+                    # Check if attention weights are None or empty
+                    if attn is None:
+                        print(f"Layer {layer_idx}: Attention weights are None")
+                        continue
+                    
                     # Handle BFloat16 attention weights
                     if attn.dtype == torch.bfloat16:
                         attn = attn.float()
@@ -502,11 +559,12 @@ class ModelVisualizer:
             # This is a simplified hook - real implementation would depend on model architecture
             if hasattr(output, 'attentions') and output.attentions is not None:
                 for layer_idx, attn in enumerate(output.attentions):
-                    if len(attn.shape) == 4:
-                        attn_avg = attn[0].mean(dim=0).cpu().numpy()
-                    else:
-                        attn_avg = attn[0].cpu().numpy()
-                    attention_weights.append((f"Layer_{layer_idx}", attn_avg))
+                    if attn is not None:
+                        if len(attn.shape) == 4:
+                            attn_avg = attn[0].mean(dim=0).cpu().numpy()
+                        else:
+                            attn_avg = attn[0].cpu().numpy()
+                        attention_weights.append((f"Layer_{layer_idx}", attn_avg))
         
         # Register hooks on attention modules
         hooks = []
