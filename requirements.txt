@@ -1,0 +1,21 @@
+# Core ML libraries
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.30.0
+datasets>=2.12.0
+transformer_engine>=1.0.0
+
+# Visualization libraries
+matplotlib>=3.5.0
+seaborn>=0.11.0
+plotly>=5.0.0
+numpy>=1.21.0
+scikit-learn>=1.0.0
+
+# Additional utilities
+tqdm>=4.64.0
+Pillow>=8.0.0
+tensorboard>=2.8.0
+onnx>=1.12.0
+onnxruntime>=1.12.0
+netron>=6.0.0
