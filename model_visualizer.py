@@ -361,7 +361,7 @@ class ModelVisualizer:
         plt.close()
     
     def create_attention_visualization(self, sequence: str = None, save_plots: bool = True) -> None:
-        """Create attention pattern visualization."""
+        """Create attention pattern visualization using real attention weights."""
         print("Creating attention pattern visualization...")
         
         # Use default sequence if not provided
@@ -369,7 +369,8 @@ class ModelVisualizer:
             if self.model_type == "protein":
                 sequence = "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"
             else:
-                sequence = "The quick brown fox jumps over the lazy dog."
+                # Use a longer sequence for better attention visualization
+                sequence = "The quick brown fox jumps over the lazy dog. This is a longer sentence to provide more context for attention pattern analysis. We need more tokens to see meaningful attention patterns."
         
         # Tokenize sequence
         inputs = self.tokenizer(sequence, return_tensors="pt")
@@ -378,53 +379,59 @@ class ModelVisualizer:
         
         seq_len = inputs['input_ids'].shape[1]
         
-        # Find attention layers
-        attention_layers = []
-        for name, module in self.model.named_modules():
-            if 'attention' in name.lower() or 'attn' in name.lower():
-                attention_layers.append((name, module))
+        # Get token texts for labeling
+        token_ids = inputs['input_ids'][0].cpu().numpy()
+        token_texts = [self.tokenizer.decode([token_id]) for token_id in token_ids]
+        # Truncate long token texts for display
+        token_labels = [text[:8] + "..." if len(text) > 8 else text for text in token_texts]
         
-        if not attention_layers:
-            print("No attention layers found. Creating generic visualization.")
-            self._create_generic_attention_plot(sequence, save_plots)
+        print(f"Sequence length: {seq_len} tokens")
+        print(f"Tokens: {token_texts}")
+        
+        # Try to get real attention weights
+        attention_weights = self._extract_real_attention_weights(inputs)
+        
+        if attention_weights is None:
+            print("Could not extract real attention weights. This model may not support attention output.")
             return
         
-        print(f"Found {len(attention_layers)} attention-related modules")
-        
-        # Filter to show only main attention layers
-        main_attention_layers = []
-        for name, module in attention_layers:
-            if any(pattern in name.lower() for pattern in ['self_attention', 'self_attn', 'attention']):
-                if not any(sub in name.lower() for sub in ['layernorm', 'norm', 'dropout', 'proj']):
-                    main_attention_layers.append((name, module))
-        
-        if not main_attention_layers:
-            # Fallback to any attention layer
-            main_attention_layers = attention_layers[:min(len(attention_layers), 16)]
-        
-        print(f"Showing {len(main_attention_layers)} main attention layers")
+        print(f"Extracted attention weights from {len(attention_weights)} layers")
         
         # Create visualization
-        n_layers = len(main_attention_layers)
+        n_layers = len(attention_weights)
         n_cols = 4
         n_rows = (n_layers + n_cols - 1) // n_cols
         
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 5 * n_rows))
+        # Make the figure larger for better visibility
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(24, 6 * n_rows))
         if n_rows == 1:
             axes = axes.reshape(1, -1)
         
-        for idx, (name, module) in enumerate(main_attention_layers):
+        for idx, (layer_name, attn_weights) in enumerate(attention_weights):
             row, col = divmod(idx, n_cols)
             ax = axes[row, col]
             
-            # Create synthetic attention pattern
-            attention_pattern = self._generate_synthetic_attention_pattern(seq_len, module)
-            
             # Plot attention heatmap
-            im = ax.imshow(attention_pattern, cmap='Blues', aspect='auto')
-            ax.set_title(f"Layer {idx + 1}: {name.split('.')[-1]}")
-            ax.set_xlabel("Key Position")
-            ax.set_ylabel("Query Position")
+            im = ax.imshow(attn_weights, cmap='Blues', aspect='auto')
+            ax.set_title(f"Layer {idx + 1}: {layer_name}", fontsize=10)
+            ax.set_xlabel("Key Position", fontsize=9)
+            ax.set_ylabel("Query Position", fontsize=9)
+            
+            # Add token labels if sequence is not too long
+            if seq_len <= 20:  # Only add labels for shorter sequences
+                ax.set_xticks(range(seq_len))
+                ax.set_yticks(range(seq_len))
+                ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=8)
+                ax.set_yticklabels(token_labels, fontsize=8)
+            else:
+                # For longer sequences, just show every few tokens
+                step = max(1, seq_len // 10)
+                ax.set_xticks(range(0, seq_len, step))
+                ax.set_yticks(range(0, seq_len, step))
+                ax.set_xticklabels([token_labels[i] for i in range(0, seq_len, step)], 
+                                 rotation=45, ha='right', fontsize=8)
+                ax.set_yticklabels([token_labels[i] for i in range(0, seq_len, step)], 
+                                 fontsize=8)
             
             # Add colorbar
             plt.colorbar(im, ax=ax, shrink=0.8)
@@ -434,7 +441,7 @@ class ModelVisualizer:
             row, col = divmod(idx, n_cols)
             axes[row, col].set_visible(False)
         
-        plt.suptitle(f"Attention Patterns - {self.model_id}", fontsize=16)
+        plt.suptitle(f"Real Attention Patterns - {self.model_id}", fontsize=16)
         plt.tight_layout()
         
         if save_plots:
@@ -443,55 +450,82 @@ class ModelVisualizer:
         
         plt.close()
     
-    def _generate_synthetic_attention_pattern(self, seq_len: int, module) -> np.ndarray:
-        """Generate a synthetic attention pattern based on module weights."""
-        # Create a synthetic attention pattern
-        # This is a simplified visualization since we can't access real attention weights
-        
-        # Generate pattern based on sequence length and some randomness
-        pattern = np.random.rand(seq_len, seq_len)
-        
-        # Add some structure to make it look more realistic
-        # Diagonal bias (self-attention)
-        for i in range(seq_len):
-            pattern[i, i] += 0.5
-        
-        # Local attention bias
-        for i in range(seq_len):
-            for j in range(max(0, i-2), min(seq_len, i+3)):
-                pattern[i, j] += 0.3
-        
-        # Normalize to make it look like attention weights
-        pattern = np.exp(pattern)
-        pattern = pattern / pattern.sum(axis=1, keepdims=True)
-        
-        return pattern
+    def _extract_real_attention_weights(self, inputs) -> list:
+        """Extract real attention weights from the model."""
+        try:
+            # Set model to evaluation mode
+            self.model.eval()
+            
+            # Try to get attention weights by setting output_attentions=True
+            with torch.no_grad():
+                outputs = self.model(**inputs, output_attentions=True)
+                
+            if hasattr(outputs, 'attentions') and outputs.attentions is not None:
+                attention_weights = []
+                
+                # Process each layer's attention weights
+                for layer_idx, attn in enumerate(outputs.attentions):
+                    # Handle BFloat16 attention weights
+                    if attn.dtype == torch.bfloat16:
+                        attn = attn.float()
+                    
+                    # attn shape is typically (batch_size, num_heads, seq_len, seq_len)
+                    if len(attn.shape) == 4:
+                        # Average across heads and batch
+                        attn_avg = attn[0].mean(dim=0).cpu().numpy()  # (seq_len, seq_len)
+                    elif len(attn.shape) == 3:
+                        # Already averaged or single head
+                        attn_avg = attn[0].cpu().numpy()  # (seq_len, seq_len)
+                    else:
+                        print(f"Unexpected attention shape: {attn.shape}")
+                        continue
+                    
+                    attention_weights.append((f"Layer_{layer_idx}", attn_avg))
+                
+                return attention_weights
+            else:
+                print("Model does not return attention weights with output_attentions=True")
+                return None
+                
+        except Exception as e:
+            print(f"Error extracting attention weights: {e}")
+            print("Trying alternative method...")
+            
+            # Alternative method: Hook into attention layers
+            return self._extract_attention_with_hooks(inputs)
     
-    def _create_generic_attention_plot(self, sequence: str, save_plots: bool = True) -> None:
-        """Create a generic attention plot when no attention layers are found."""
-        print("Creating generic attention visualization...")
+    def _extract_attention_with_hooks(self, inputs) -> list:
+        """Extract attention weights using forward hooks."""
+        attention_weights = []
         
-        # Tokenize sequence
-        inputs = self.tokenizer(sequence, return_tensors="pt")
-        seq_len = inputs['input_ids'].shape[1]
+        def attention_hook(module, input, output):
+            # This is a simplified hook - real implementation would depend on model architecture
+            if hasattr(output, 'attentions') and output.attentions is not None:
+                for layer_idx, attn in enumerate(output.attentions):
+                    if len(attn.shape) == 4:
+                        attn_avg = attn[0].mean(dim=0).cpu().numpy()
+                    else:
+                        attn_avg = attn[0].cpu().numpy()
+                    attention_weights.append((f"Layer_{layer_idx}", attn_avg))
         
-        # Create a simple synthetic attention pattern
-        pattern = np.random.rand(seq_len, seq_len)
-        pattern = np.exp(pattern)
-        pattern = pattern / pattern.sum(axis=1, keepdims=True)
+        # Register hooks on attention modules
+        hooks = []
+        for name, module in self.model.named_modules():
+            if 'attention' in name.lower() or 'attn' in name.lower():
+                hook = module.register_forward_hook(attention_hook)
+                hooks.append(hook)
         
-        plt.figure(figsize=(10, 8))
-        im = plt.imshow(pattern, cmap='Blues', aspect='auto')
-        plt.title(f"Generic Attention Pattern - {self.model_id}")
-        plt.xlabel("Key Position")
-        plt.ylabel("Query Position")
-        plt.colorbar(im, shrink=0.8)
+        try:
+            with torch.no_grad():
+                _ = self.model(**inputs)
+        finally:
+            # Remove hooks
+            for hook in hooks:
+                hook.remove()
         
-        if save_plots:
-            plt.savefig(self.output_dir / "attention_patterns.png", dpi=300, bbox_inches='tight')
-            print(f"Saved generic attention plot to: {self.output_dir / 'attention_patterns.png'}")
-        
-        plt.close()
+        return attention_weights if attention_weights else None
+    
+    
     
     def create_model_architecture_plot(self, save_plots: bool = True) -> None:
         """Create a plot showing model architecture overview."""
